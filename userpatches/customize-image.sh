@@ -194,6 +194,8 @@ bogus-priv
 no-resolv
 bind-interfaces
 server=127.0.0.1#1053
+server=223.5.5.5
+server=119.29.29.29
 
 interface=eth1
 dhcp-range=192.168.100.100,192.168.100.250,255.255.255.0,12h
@@ -370,6 +372,12 @@ EOF
     echo "Fetching mihomo from: $MIHOMO_URL"
     curl -sSfL "$MIHOMO_URL" | gunzip > /usr/local/bin/mihomo
     chmod +x /usr/local/bin/mihomo
+
+    # Mihomo refuses to start when GEOIP rules need geoip.metadb and DNS is not ready yet.
+    # Bundle the database during image build so first boot does not deadlock on DNS.
+    GEOIP_METADB_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+    echo "Fetching mihomo GeoIP database from: $GEOIP_METADB_URL"
+    curl -sSfL "$GEOIP_METADB_URL" -o /etc/mihomo/geoip.metadb
 
     # 11. 下载并解压 MetaCubeXD 可视化面板到 /etc/mihomo/ui
     echo "Downloading MetaCubeXD Web UI..."
