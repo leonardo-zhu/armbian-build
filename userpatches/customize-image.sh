@@ -34,9 +34,13 @@ Main() {
         echo "extraargs=net.ifnames=0 biosdevname=0" >> /boot/armbianEnv.txt
     fi
 
-    # 3. 读取 PPPoE 账号密码（硬编码用户配置）
-    PPPOE_ACCOUNT="15915376454@139.gd"
-    PPPOE_PASSWORD="147258"
+    # 3. 读取 PPPoE 账号密码
+    # 注意：Armbian chroot 沙盒会清空外部环境变量，必须从外部挂载的文件中读取
+    if [ -f "/tmp/overlay/secrets.sh" ]; then
+        source "/tmp/overlay/secrets.sh"
+    fi
+    PPPOE_ACCOUNT="${PPPOE_USER:-YOUR_PPPOE_ACCOUNT}"
+    PPPOE_PASSWORD="${PPPOE_PASS:-YOUR_PPPOE_PASSWORD}"
 
     echo "Configuring PPPoE for WAN (eth0) with account: $PPPOE_ACCOUNT ..."
 
@@ -46,6 +50,7 @@ plugin rp-pppoe.so eth0
 user "$PPPOE_ACCOUNT"
 usepeerdns
 defaultroute
+replacedefaultroute
 hide-password
 lcp-echo-interval 20
 lcp-echo-failure 3
@@ -147,7 +152,6 @@ table inet filter {
 
         # 允许 LAN (eth1) 访问路由器基础服务 (SSH, DNS, DHCP, ICMP, ICMPv6)
         iif "eth1" accept
-        ip6 nspreview accept
         icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, echo-reply, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
     }
 
@@ -162,7 +166,6 @@ table inet filter {
         iif "eth1" oif "eth1" accept
         
         # 允许 IPv6 流量转发
-        ip6 nspreview accept
         icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, echo-reply } accept
         iif "eth1" accept
     }
@@ -212,17 +215,19 @@ EOF
 
     # 8. 安装 Docker 与 Docker Compose
     echo "Installing Docker and Docker Compose..."
-    apt-get install -y --no-install-recommends docker.io docker-compose-v2
+    apt-get install -y --no-install-recommends docker.io docker-compose-plugin
     systemctl enable docker
 
     # 9. 下载并配置 Mihomo (Clash Meta)
     echo "Downloading and configuring Mihomo (arm64)..."
     mkdir -p /etc/mihomo /var/log/mihomo
-    MIHOMO_LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "v1.19.0")
+    
+    # 绕过 GitHub API 以防频繁编译触发限流导致下载到错误文件
+    MIHOMO_LATEST_TAG="v1.18.7"
     MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_LATEST_TAG}/mihomo-linux-arm64-compatible-${MIHOMO_LATEST_TAG}.gz"
     
     echo "Fetching mihomo from: $MIHOMO_URL"
-    curl -sSL "$MIHOMO_URL" | gunzip > /usr/local/bin/mihomo
+    curl -sSfL "$MIHOMO_URL" | gunzip > /usr/local/bin/mihomo
     chmod +x /usr/local/bin/mihomo
 
     # 10. 下载并解压 MetaCubeXD 可视化面板到 /etc/mihomo/ui
