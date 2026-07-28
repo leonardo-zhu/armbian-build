@@ -377,7 +377,7 @@ EOF
         echo "WARNING: Unable to discover MetaCubeXD UI asset; continuing without bundled UI." >&2
     fi
 
-    # 基础 config.yaml (只保留纯粹干净的 TUN 模式模板)
+    # 基础 config.yaml：预装备用，但默认不接管路由/DNS，避免破坏基础软路由转发。
     cat <<EOF > /etc/mihomo/config.yaml
 port: 7890
 socks-port: 7891
@@ -390,17 +390,16 @@ external-ui: ui
 secret: ""
 
 tun:
-  enable: true
+  enable: false
   stack: system
-  dns-hijack:
-    - "any:53"
-  auto-route: true
-  auto-detect-interface: true
+  dns-hijack: []
+  auto-route: false
+  auto-detect-interface: false
 
 dns:
-  enable: true
-  listen: 0.0.0.0:1053
-  enhanced-mode: fake-ip
+  enable: false
+  listen: 127.0.0.1:1053
+  enhanced-mode: redir-host
   nameserver:
     - 223.5.5.5
     - 119.29.29.29
@@ -429,7 +428,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-    systemctl enable mihomo.service
+    systemctl disable mihomo.service 2>/dev/null || true
 
     # 12. 配置 NanoPi R4S 原生板载指示灯 (SYS / WAN / LAN)
     echo "Configuring NanoPi R4S LED triggers for WAN (eth0) and LAN (eth1)..."
