@@ -47,11 +47,15 @@ jobs:
             RELEASE=${{ github.event.inputs.release }} \
             BUILD_MINIMAL=no \
             BUILD_DESKTOP=no \
-            KERNEL_CONFIGURE=no
+            KERNEL_CONFIGURE=no \
+            COMPRESS_OUTPUTIMAGE=sha,img,xz
 
       - name: Compress & Upload Armbian Image
         uses: actions/upload-artifact@v4
         with:
           name: Armbian_nanopi-r4s_${{ github.event.inputs.release }}_${{ github.event.inputs.branch }}
-          path: output/images/*.img.xz
+          path: |
+            output/images/*.img
+            output/images/*.img.xz
+            output/images/*.sha
           retention-days: 7
