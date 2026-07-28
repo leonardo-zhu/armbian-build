@@ -119,6 +119,7 @@ EOF
 domain-needed
 bogus-priv
 no-resolv
+bind-interfaces
 server=223.5.5.5
 server=119.29.29.29
 
@@ -159,8 +160,8 @@ table inet filter {
         type filter hook forward priority 0; policy drop;
 
         # 允许 LAN (eth1) 转发到 WAN (ppp0)
-        iif "eth1" oif "ppp0" accept
-        iif "ppp0" oif "eth1" ct state established,related accept
+        iif "eth1" oifname "ppp0" accept
+        iifname "ppp0" oif "eth1" ct state established,related accept
 
         # 允许 LAN 内部转发
         iif "eth1" oif "eth1" accept

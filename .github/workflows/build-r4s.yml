@@ -41,10 +41,9 @@ jobs:
           SECRET_USER: ${{ secrets.PPPOE_USER }}
           SECRET_PASS: ${{ secrets.PPPOE_PASS }}
         run: |
-          # Armbian 的 chroot 沙盒会清空所有环境变量
-          # 因此只能将变量写入到 userpatches 目录（沙盒内映射为 /tmp/overlay）供脚本读取
-          mkdir -p userpatches/overlay/tmp/overlay
-          cat <<EOF > userpatches/overlay/tmp/overlay/secrets.sh
+          # Armbian 的 chroot 沙盒会把主机的 userpatches 目录挂载到沙盒内的 /tmp/overlay
+          # 因此我们直接写入 userpatches/secrets.sh，脚本里就能通过 /tmp/overlay/secrets.sh 读到了
+          cat <<EOF > userpatches/secrets.sh
           export PPPOE_USER='${SECRET_USER}'
           export PPPOE_PASS='${SECRET_PASS}'
           EOF
