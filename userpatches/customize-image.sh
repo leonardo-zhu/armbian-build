@@ -27,7 +27,29 @@ Main() {
         lm-sensors \
         sudo
 
-    # 2. 读取 PPPoE 账号密码（从 GH Secrets 注入的环境变量获取，默认使用占位符）
+    # 2. 通过硬件 MAC 地址绝对锁定 WAN/LAN 物理网口命名 (彻底防止网口漂移颠倒)
+    echo "Locking physical interfaces by MAC addresses (WAN: 65:96 -> eth0, LAN: 65:97 -> eth1)..."
+    mkdir -p /etc/systemd/network
+    
+    # WAN 物理口 MAC 锁定为 eth0
+    cat <<EOF > /etc/systemd/network/10-wan.link
+[Match]
+MACAddress=ae:86:d1:0d:65:96
+
+[Link]
+Name=eth0
+EOF
+
+    # LAN 物理口 MAC 锁定为 eth1
+    cat <<EOF > /etc/systemd/network/10-lan.link
+[Match]
+MACAddress=ae:86:d1:0d:65:97
+
+[Link]
+Name=eth1
+EOF
+
+    # 3. 读取 PPPoE 账号密码（从 GH Secrets 注入的环境变量获取，默认使用占位符）
     PPPOE_ACCOUNT="${PPPOE_USER:-YOUR_PPPOE_ACCOUNT}"
     PPPOE_PASSWORD="${PPPOE_PASS:-YOUR_PPPOE_PASSWORD}"
 
@@ -306,6 +328,50 @@ WantedBy=multi-user.target
 EOF
 
     systemctl enable mihomo.service
+
+    # 11. 配置 NanoPi R4S 原生板载指示灯 (SYS / WAN / LAN)
+    echo "Configuring NanoPi R4S LED triggers for WAN (eth0) and LAN (eth1)..."
+    cat <<'EOF' > /usr/local/bin/setup-r4s-leds.sh
+#!/bin/sh
+# SYS 灯设置为 heartbeat 心跳闪烁
+if [ -d "/sys/class/leds/nanopi-r4s:red:sys" ]; then
+    echo heartbeat > /sys/class/leds/nanopi-r4s:red:sys/trigger 2>/dev/null || true
+fi
+
+# WAN 灯绑定 eth0 网口 (Link + TX + RX 数据收发闪烁)
+if [ -d "/sys/class/leds/nanopi-r4s:green:wan" ]; then
+    echo netdev > /sys/class/leds/nanopi-r4s:green:wan/trigger 2>/dev/null || true
+    echo eth0 > /sys/class/leds/nanopi-r4s:green:wan/device_name 2>/dev/null || true
+    echo "link rx tx" > /sys/class/leds/nanopi-r4s:green:wan/settings 2>/dev/null || true
+    echo "1 1 1" > /sys/class/leds/nanopi-r4s:green:wan/mode 2>/dev/null || true
+fi
+
+# LAN 灯绑定 eth1 网口 (Link + TX + RX 数据收发闪烁)
+if [ -d "/sys/class/leds/nanopi-r4s:green:lan" ]; then
+    echo netdev > /sys/class/leds/nanopi-r4s:green:lan/trigger 2>/dev/null || true
+    echo eth1 > /sys/class/leds/nanopi-r4s:green:lan/device_name 2>/dev/null || true
+    echo "link rx tx" > /sys/class/leds/nanopi-r4s:green:lan/settings 2>/dev/null || true
+    echo "1 1 1" > /sys/class/leds/nanopi-r4s:green:lan/mode 2>/dev/null || true
+fi
+EOF
+    chmod +x /usr/local/bin/setup-r4s-leds.sh
+
+    # 创建 systemd 开机服务
+    cat <<EOF > /etc/systemd/system/r4s-leds.service
+[Unit]
+Description=NanoPi R4S LED Indicator Setup
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup-r4s-leds.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl enable r4s-leds.service
 
     echo "=== Customization script completed successfully ==="
 }
