@@ -40,13 +40,22 @@ jobs:
         env:
           SECRET_USER: ${{ secrets.PPPOE_USER }}
           SECRET_PASS: ${{ secrets.PPPOE_PASS }}
+        shell: bash
         run: |
-          # Armbian 的 chroot 沙盒会把主机的 userpatches 目录挂载到沙盒内的 /tmp/overlay
-          # 因此我们直接写入 userpatches/secrets.sh，脚本里就能通过 /tmp/overlay/secrets.sh 读到了
-          cat <<EOF > userpatches/secrets.sh
-          export PPPOE_USER='${SECRET_USER}'
-          export PPPOE_PASS='${SECRET_PASS}'
-          EOF
+          set -euo pipefail
+
+          if [[ -z "${SECRET_USER}" || -z "${SECRET_PASS}" ]]; then
+            echo "PPPOE_USER and PPPOE_PASS GitHub Actions secrets are required." >&2
+            exit 1
+          fi
+
+          # Armbian binds host userpatches/overlay to /tmp/overlay inside the image chroot.
+          install -d -m 700 userpatches/overlay
+          {
+            printf 'export PPPOE_USER=%q\n' "${SECRET_USER}"
+            printf 'export PPPOE_PASS=%q\n' "${SECRET_PASS}"
+          } > userpatches/overlay/secrets.sh
+          chmod 600 userpatches/overlay/secrets.sh
           
       - name: Compile Armbian Image
         run: |
@@ -54,6 +63,8 @@ jobs:
             BOARD=nanopi-r4s \
             BRANCH=${{ github.event.inputs.branch }} \
             RELEASE=${{ github.event.inputs.release }} \
+            VENDOR=Armbian \
+            ROOTPWD='15956404411Zxl' \
             BUILD_MINIMAL=no \
             BUILD_DESKTOP=no \
             KERNEL_CONFIGURE=no \
