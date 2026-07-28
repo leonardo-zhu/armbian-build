@@ -50,7 +50,6 @@ jobs:
         env:
           PPPOE_USER: ${{ secrets.PPPOE_USER }}
           PPPOE_PASS: ${{ secrets.PPPOE_PASS }}
-          MIHOMO_CONFIG: ${{ secrets.MIHOMO_CONFIG }}
         run: |
           ./compile.sh build \
             BOARD=nanopi-r4s \

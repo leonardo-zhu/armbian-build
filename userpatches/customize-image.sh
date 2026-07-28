@@ -191,17 +191,8 @@ EOF
     echo "Fetching metacubexd from: $METACUBEXD_URL"
     curl -sSL "$METACUBEXD_URL" | tar -xz -C /etc/mihomo/ui
 
-    # 基础 config.yaml (使用 printf 保持多行 YAML 格式完全原样写入)
-    if [ -n "$MIHOMO_CONFIG" ]; then
-        echo "Injecting Mihomo config from GitHub Secrets..."
-        printf '%s\n' "$MIHOMO_CONFIG" > /etc/mihomo/config.yaml
-        # 确保包含 external-ui 配置
-        if ! grep -q "external-ui" /etc/mihomo/config.yaml; then
-            echo "external-ui: ui" >> /etc/mihomo/config.yaml
-        fi
-    else
-        echo "No MIHOMO_CONFIG secret provided, writing base template..."
-        cat <<EOF > /etc/mihomo/config.yaml
+    # 基础 config.yaml (预留干净的基础模板，方便后续在 Web 界面上传完整配置)
+    cat <<EOF > /etc/mihomo/config.yaml
 port: 7890
 socks-port: 7891
 redir-port: 7892
@@ -233,7 +224,6 @@ rules:
   - GEOIP,LAN,DIRECT
   - MATCH,DIRECT
 EOF
-    fi
 
     # 创建 mihomo systemd 服务
     cat <<EOF > /etc/systemd/system/mihomo.service
