@@ -1,0 +1,68 @@
+name: Build Armbian for NanoPi R4S
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Debian/Ubuntu Release'
+        required: true
+        default: 'bookworm'
+        type: choice
+        options:
+          - bookworm
+          - noble
+      branch:
+        description: 'Kernel Branch'
+        required: true
+        default: 'current'
+        type: choice
+        options:
+          - current
+          - edge
+          - legacy
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /var/lib/docker
+          echo "=== Disk space after cleanup ==="
+          df -h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential ca-certificates pigz jq
+
+      - name: Compile Armbian Image
+        env:
+          PPPOE_USER: ${{ secrets.PPPOE_USER }}
+          PPPOE_PASS: ${{ secrets.PPPOE_PASS }}
+          MIHOMO_CONFIG: ${{ secrets.MIHOMO_CONFIG }}
+        run: |
+          ./compile.sh build \
+            BOARD=nanopi-r4s \
+            BRANCH=${{ github.event.inputs.branch }} \
+            RELEASE=${{ github.event.inputs.release }} \
+            BUILD_MINIMAL=no \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no
+
+      - name: Compress & Upload Armbian Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Armbian_nanopi-r4s_${{ github.event.inputs.release }}_${{ github.event.inputs.branch }}
+          path: output/images/*.img.xz
+          retention-days: 7
