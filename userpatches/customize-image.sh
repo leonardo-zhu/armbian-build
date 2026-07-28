@@ -34,9 +34,9 @@ Main() {
         echo "extraargs=net.ifnames=0 biosdevname=0" >> /boot/armbianEnv.txt
     fi
 
-    # 3. 读取 PPPoE 账号密码（从 GH Secrets 注入的环境变量获取，默认使用占位符）
-    PPPOE_ACCOUNT="${PPPOE_USER:-YOUR_PPPOE_ACCOUNT}"
-    PPPOE_PASSWORD="${PPPOE_PASS:-YOUR_PPPOE_PASSWORD}"
+    # 3. 读取 PPPoE 账号密码（硬编码用户配置）
+    PPPOE_ACCOUNT="15915376454@139.gd"
+    PPPOE_PASSWORD="147258"
 
     echo "Configuring PPPoE for WAN (eth0) with account: $PPPOE_ACCOUNT ..."
 
