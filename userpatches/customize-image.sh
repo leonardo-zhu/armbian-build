@@ -103,11 +103,6 @@ interface=eth1
 dhcp-range=192.168.100.100,192.168.100.250,255.255.255.0,12h
 dhcp-option=option:router,192.168.100.1
 dhcp-option=option:dns-server,192.168.100.1
-dhcp-leasefile=/var/lib/misc/dnsmasq.leases
-EOF
-
-    systemctl enable dnsmasq
-
     # 5. 开启内核转发与优化参数
     cat <<EOF > /etc/sysctl.d/99-router.conf
 net.ipv4.ip_forward = 1
@@ -116,7 +111,7 @@ net.ipv6.conf.default.forwarding = 1
 net.netfilter.nf_conntrack_max = 131072
 EOF
 
-    # 6. 配置 nftables 防火墙与 NAT 转发规则 (支持 Mihomo 透明代理 redir-port 7892)
+    # 6. 配置 nftables 防火墙与 NAT 转发规则 (纯粹干净的防火墙与 ppp0 NAT，不与 Mihomo TUN 冲突)
     cat <<EOF > /etc/nftables.conf
 #!/usr/sbin/nft -f
 
@@ -130,19 +125,26 @@ table inet filter {
         iif "lo" accept
         ct state established,related accept
 
-        # 允许 LAN (eth1) 访问路由器基础服务 (SSH, DNS, DHCP, ICMP)
+        # 允许 LAN (eth1) 访问路由器基础服务 (SSH, DNS, DHCP, ICMP, ICMPv6)
         iif "eth1" accept
+        ip6 nspreview accept
+        icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, echo-reply, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
     }
 
     chain forward {
         type filter hook forward priority 0; policy drop;
 
-        # 允许 LAN 转发到 WAN (ppp0)
+        # 允许 LAN (eth1) 转发到 WAN (ppp0)
         iif "eth1" oif "ppp0" accept
         iif "ppp0" oif "eth1" ct state established,related accept
 
         # 允许 LAN 内部转发
         iif "eth1" oif "eth1" accept
+        
+        # 允许 IPv6 流量转发
+        ip6 nspreview accept
+        icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, echo-reply } accept
+        iif "eth1" accept
     }
 
     chain output {
@@ -151,12 +153,6 @@ table inet filter {
 }
 
 table ip nat {
-    chain prerouting {
-        type nat hook prerouting priority 0; policy accept;
-        # 将 LAN (eth1) 的公网 TCP 流量重定向到 Mihomo redir-port 7892 (透明代理)
-        iif "eth1" ip daddr != { 127.0.0.0/8, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 } meta l4proto tcp redirect to :7892
-    }
-
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
         # WAN 接口 NAT 地址伪装
@@ -167,12 +163,78 @@ EOF
 
     systemctl enable nftables
 
-    # 7. 安装 Docker 与 Docker Compose
+    # 7. 配置 IPv6 DHCPv6-PD 前缀委派与 LAN 侧 RA/SLAAC 分发
+    echo "Configuring IPv6 DHCPv6-PD and SLAAC..."
+    
+    # 编写 odhcp6c 回调脚本：获取 PD 前缀并自动分配给 eth1
+    cat <<'EOF' > /usr/local/bin/odhcp6c-script.sh
+#!/bin/sh
+[ -z "$2" ] && exit 0
+
+case "$2" in
+    bound|informed|updated)
+        if [ -n "$PREFIXES" ]; then
+            # 提取第一个 IPv6 前缀并挂载到 eth1
+            for prefix in $PREFIXES; do
+                ADDR="${prefix%%/*}"
+                LEN="${prefix##*/}"
+                if [ "$LEN" -le 64 ]; then
+                    LAN_IP="${ADDR}1"
+                    ip -6 addr flush dev eth1 scope global 2>/dev/null
+                    ip -6 addr add "${LAN_IP}/64" dev eth1
+                    systemctl reload dnsmasq 2>/dev/null || true
+                    break
+                fi
+            done
+        fi
+        ;;
+    unbound)
+        ip -6 addr flush dev eth1 scope global 2>/dev/null
+        ;;
+esac
+EOF
+    chmod +x /usr/local/bin/odhcp6c-script.sh
+
+    # 配置 pppoe 拨号上线钩子触发 odhcp6c 获取 PD
+    mkdir -p /etc/ppp/ipv6-up.d
+    cat <<'EOF' > /etc/ppp/ipv6-up.d/dhcpv6-pd
+#!/bin/sh
+# 杀死已有的 odhcp6c 实例
+killall odhcp6c 2>/dev/null || true
+# 针对 ppp0 接口启动 odhcp6c 申请 PD 前缀 (前缀掩码范围 /60 到 /64)
+/usr/sbin/odhcp6c -s /usr/local/bin/odhcp6c-script.sh -P 64 ppp0 &
+EOF
+    chmod +x /etc/ppp/ipv6-up.d/dhcpv6-pd
+
+    # 更新 dnsmasq.conf 支持 IPv6 RA 与 SLAAC 无状态分发
+    cat <<EOF > /etc/dnsmasq.conf
+domain-needed
+bogus-priv
+no-resolv
+server=223.5.5.5
+server=119.29.29.29
+
+# IPv4 DHCP
+interface=eth1
+dhcp-range=192.168.100.100,192.168.100.250,255.255.255.0,12h
+dhcp-option=option:router,192.168.100.1
+dhcp-option=option:dns-server,192.168.100.1
+
+# IPv6 RA 通告与 SLAAC 自动无状态前缀下发
+enable-ra
+dhcp-range=set:lan6,::100,::ffff,constructor:eth1,ra-stateless,ra-names,12h
+
+dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+EOF
+
+    systemctl enable dnsmasq
+
+    # 8. 安装 Docker 与 Docker Compose
     echo "Installing Docker and Docker Compose..."
     apt-get install -y --no-install-recommends docker.io docker-compose-v2
     systemctl enable docker
 
-    # 8. 下载并配置 Mihomo (Clash Meta)
+    # 9. 下载并配置 Mihomo (Clash Meta)
     echo "Downloading and configuring Mihomo (arm64)..."
     mkdir -p /etc/mihomo /var/log/mihomo
     MIHOMO_LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "v1.19.0")
@@ -182,7 +244,7 @@ EOF
     curl -sSL "$MIHOMO_URL" | gunzip > /usr/local/bin/mihomo
     chmod +x /usr/local/bin/mihomo
 
-    # 9. 下载并解压 MetaCubeXD 可视化面板到 /etc/mihomo/ui
+    # 10. 下载并解压 MetaCubeXD 可视化面板到 /etc/mihomo/ui
     echo "Downloading MetaCubeXD Web UI..."
     mkdir -p /etc/mihomo/ui
     METACUBEXD_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/metacubexd/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "v1.170.0")
@@ -191,11 +253,10 @@ EOF
     echo "Fetching metacubexd from: $METACUBEXD_URL"
     curl -sSL "$METACUBEXD_URL" | tar -xz -C /etc/mihomo/ui
 
-    # 基础 config.yaml (预留干净的基础模板，方便后续在 Web 界面上传完整配置)
+    # 基础 config.yaml (只保留纯粹干净的 TUN 模式模板)
     cat <<EOF > /etc/mihomo/config.yaml
 port: 7890
 socks-port: 7891
-redir-port: 7892
 allow-lan: true
 mode: rule
 log-level: info
