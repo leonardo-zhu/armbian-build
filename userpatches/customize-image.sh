@@ -136,8 +136,7 @@ EOF
     cat <<EOF > /etc/systemd/system/pppoe-wan.service
 [Unit]
 Description=PPPoE WAN Connection
-After=systemd-networkd.service network-online.target
-Wants=network-online.target
+After=systemd-networkd.service
 
 [Service]
 Type=simple
@@ -178,6 +177,8 @@ EOF
     systemctl enable systemd-networkd.service
     systemctl enable systemd-resolved.service || true
     systemctl disable NetworkManager.service 2>/dev/null || true
+    systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
+    systemctl mask systemd-networkd-wait-online.service 2>/dev/null || true
 
     # 保留一个最小 interfaces 文件，避免 ifupdown 意外接管 eth0/eth1。
     mkdir -p /etc/network
@@ -199,20 +200,90 @@ interface=eth1
 dhcp-range=192.168.100.100,192.168.100.250,255.255.255.0,12h
 dhcp-option=option:router,192.168.100.1
 dhcp-option=option:dns-server,192.168.100.1
+dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+EOF
 
+    cat <<'EOF' > /usr/local/sbin/r4s-sync-ipv6-ra
+#!/bin/sh
+set -eu
+
+BASE_CONF=/etc/dnsmasq.conf
+RA_CONF=/etc/dnsmasq.d/r4s-ipv6-ra.conf
+
+mkdir -p /etc/dnsmasq.d
+
+if ip -6 route show default dev ppp0 2>/dev/null | grep -q .; then
+    cat > "$RA_CONF" <<RAEOF
 enable-ra
 dhcp-range=set:lan6,fd00::100,fd00::ffff,64,12h
 dhcp-option=option6:dns-server,[fd00::1]
-dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+RAEOF
+else
+    rm -f "$RA_CONF"
+fi
+
+grep -q '^conf-dir=/etc/dnsmasq.d' "$BASE_CONF" || echo 'conf-dir=/etc/dnsmasq.d,*.conf' >> "$BASE_CONF"
+systemctl reload dnsmasq.service 2>/dev/null || systemctl restart dnsmasq.service
 EOF
+    chmod +x /usr/local/sbin/r4s-sync-ipv6-ra
+
+    cat <<'EOF' > /etc/systemd/system/r4s-ipv6-ra-sync.service
+[Unit]
+Description=Enable LAN IPv6 RA only after PPPoE IPv6 default route exists
+After=pppoe-wan.service dnsmasq.service
+Wants=dnsmasq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/r4s-sync-ipv6-ra
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat <<'EOF' > /etc/systemd/system/r4s-ipv6-ra-sync.timer
+[Unit]
+Description=Periodically sync LAN IPv6 RA state with PPPoE IPv6 upstream
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=r4s-ipv6-ra-sync.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl enable r4s-ipv6-ra-sync.timer
 
     # 7. 开启内核转发与优化参数
     cat <<EOF > /etc/sysctl.d/99-router.conf
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv6.conf.default.forwarding = 1
+net.ipv6.conf.all.accept_ra = 2
+net.ipv6.conf.default.accept_ra = 2
 net.netfilter.nf_conntrack_max = 131072
 EOF
+
+    mkdir -p /etc/ppp/ip-up.d /etc/ppp/ipv6-up.d
+    cat <<'EOF' > /etc/ppp/ip-up.d/10-r4s-pppoe-up
+#!/bin/sh
+sysctl -w net.ipv6.conf.all.accept_ra=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.accept_ra=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.ppp0.accept_ra=2 >/dev/null 2>&1 || true
+systemctl start r4s-ipv6-ra-sync.service >/dev/null 2>&1 || true
+EOF
+    chmod +x /etc/ppp/ip-up.d/10-r4s-pppoe-up
+
+    cat <<'EOF' > /etc/ppp/ipv6-up.d/10-r4s-pppoe-ipv6-up
+#!/bin/sh
+sysctl -w net.ipv6.conf.all.accept_ra=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.accept_ra=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.ppp0.accept_ra=2 >/dev/null 2>&1 || true
+systemctl start r4s-ipv6-ra-sync.service >/dev/null 2>&1 || true
+EOF
+    chmod +x /etc/ppp/ipv6-up.d/10-r4s-pppoe-ipv6-up
 
     # 8. 配置 nftables 防火墙与 NAT 转发规则 (纯粹干净的防火墙与 ppp0 NAT，不与 Mihomo TUN 冲突)
     cat <<EOF > /etc/nftables.conf
@@ -364,26 +435,40 @@ EOF
     echo "Configuring NanoPi R4S LED triggers for WAN (eth0) and LAN (eth1)..."
     cat <<'EOF' > /usr/local/bin/setup-r4s-leds.sh
 #!/bin/sh
-# SYS 灯设置为 heartbeat 心跳闪烁
-if [ -d "/sys/class/leds/nanopi-r4s:red:sys" ]; then
-    echo heartbeat > /sys/class/leds/nanopi-r4s:red:sys/trigger 2>/dev/null || true
-fi
+set -eu
 
-# WAN 灯绑定 eth0 网口 (Link + TX + RX 数据收发闪烁)
-if [ -d "/sys/class/leds/nanopi-r4s:green:wan" ]; then
-    echo netdev > /sys/class/leds/nanopi-r4s:green:wan/trigger 2>/dev/null || true
-    echo eth0 > /sys/class/leds/nanopi-r4s:green:wan/device_name 2>/dev/null || true
-    echo "link rx tx" > /sys/class/leds/nanopi-r4s:green:wan/settings 2>/dev/null || true
-    echo "1 1 1" > /sys/class/leds/nanopi-r4s:green:wan/mode 2>/dev/null || true
-fi
+find_led() {
+    pattern="$1"
+    for led in /sys/class/leds/*; do
+        [ -d "$led" ] || continue
+        case "$(basename "$led")" in
+            *"$pattern"*) printf '%s\n' "$led"; return 0 ;;
+        esac
+    done
+    return 1
+}
 
-# LAN 灯绑定 eth1 网口 (Link + TX + RX 数据收发闪烁)
-if [ -d "/sys/class/leds/nanopi-r4s:green:lan" ]; then
-    echo netdev > /sys/class/leds/nanopi-r4s:green:lan/trigger 2>/dev/null || true
-    echo eth1 > /sys/class/leds/nanopi-r4s:green:lan/device_name 2>/dev/null || true
-    echo "link rx tx" > /sys/class/leds/nanopi-r4s:green:lan/settings 2>/dev/null || true
-    echo "1 1 1" > /sys/class/leds/nanopi-r4s:green:lan/mode 2>/dev/null || true
-fi
+set_netdev_led() {
+    led="$1"
+    dev="$2"
+    [ -n "$led" ] && [ -d "$led" ] || return 0
+    modprobe ledtrig-netdev 2>/dev/null || true
+    echo netdev > "$led/trigger" 2>/dev/null || true
+    echo "$dev" > "$led/device_name" 2>/dev/null || true
+    echo 1 > "$led/link" 2>/dev/null || true
+    echo 1 > "$led/rx" 2>/dev/null || true
+    echo 1 > "$led/tx" 2>/dev/null || true
+    echo "link rx tx" > "$led/settings" 2>/dev/null || true
+    echo "1 1 1" > "$led/mode" 2>/dev/null || true
+}
+
+SYS_LED="$(find_led 'sys' || find_led 'power' || true)"
+WAN_LED="$(find_led 'wan' || true)"
+LAN_LED="$(find_led 'lan' || true)"
+
+[ -n "$SYS_LED" ] && echo heartbeat > "$SYS_LED/trigger" 2>/dev/null || true
+set_netdev_led "$WAN_LED" eth0
+set_netdev_led "$LAN_LED" eth1
 EOF
     chmod +x /usr/local/bin/setup-r4s-leds.sh
 
