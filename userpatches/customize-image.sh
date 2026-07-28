@@ -374,10 +374,14 @@ EOF
     chmod +x /usr/local/bin/mihomo
 
     # Mihomo refuses to start when GEOIP rules need geoip.metadb and DNS is not ready yet.
-    # Bundle the database during image build so first boot does not deadlock on DNS.
-    GEOIP_METADB_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
-    echo "Fetching mihomo GeoIP database from: $GEOIP_METADB_URL"
-    curl -sSfL "$GEOIP_METADB_URL" -o /etc/mihomo/geoip.metadb
+    # Prefer a bundled database from userpatches/overlay; download during build only as fallback.
+    if [ -f "/tmp/overlay/geoip.metadb" ]; then
+        install -m 600 "/tmp/overlay/geoip.metadb" /etc/mihomo/geoip.metadb
+    else
+        GEOIP_METADB_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+        echo "Fetching mihomo GeoIP database from: $GEOIP_METADB_URL"
+        curl -sSfL "$GEOIP_METADB_URL" -o /etc/mihomo/geoip.metadb
+    fi
 
     # 11. 下载并解压 MetaCubeXD 可视化面板到 /etc/mihomo/ui
     echo "Downloading MetaCubeXD Web UI..."
