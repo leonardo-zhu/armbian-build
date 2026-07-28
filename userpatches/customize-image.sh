@@ -16,7 +16,6 @@ Main() {
         dnsmasq \
         ppp \
         pppoe \
-        odhcp6c \
         curl \
         wget \
         ca-certificates \
