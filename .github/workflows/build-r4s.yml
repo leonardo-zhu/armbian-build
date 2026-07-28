@@ -32,12 +32,14 @@ jobs:
         run: |
           echo "=== Disk space before cleanup ==="
           df -h
+          sudo systemctl stop docker || true
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/share/boost
           sudo rm -rf /opt/hostedtoolcache
           sudo rm -rf /var/lib/docker
+          sudo systemctl start docker || true
           echo "=== Disk space after cleanup ==="
           df -h
 
