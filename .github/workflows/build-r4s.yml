@@ -28,10 +28,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU for arm64 emulation
+        uses: docker/setup-qemu-action@v3
+
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential ca-certificates pigz jq
+          sudo apt-get install -y git build-essential ca-certificates pigz jq qemu-user-static binfmt-support
 
       - name: Compile Armbian Image
         env:
