@@ -27,27 +27,13 @@ Main() {
         lm-sensors \
         sudo
 
-    # 2. 通过硬件 MAC 地址绝对锁定 WAN/LAN 物理网口命名 (彻底防止网口漂移颠倒)
-    echo "Locking physical interfaces by MAC addresses (WAN: 65:96 -> eth0, LAN: 65:97 -> eth1)..."
-    mkdir -p /etc/systemd/network
-    
-    # WAN 物理口 MAC 锁定为 eth0
-    cat <<EOF > /etc/systemd/network/10-wan.link
-[Match]
-MACAddress=ae:86:d1:0d:65:96
-
-[Link]
-Name=eth0
-EOF
-
-    # LAN 物理口 MAC 锁定为 eth1
-    cat <<EOF > /etc/systemd/network/10-lan.link
-[Match]
-MACAddress=ae:86:d1:0d:65:97
-
-[Link]
-Name=eth1
-EOF
+    # 2. 禁用 systemd 复杂预测网口名，内核级强制恢复传统 eth0 / eth1 网口命名 (100% 解决接口名漂移和找不到网卡问题)
+    echo "Disabling Predictable Network Interface Names (net.ifnames=0)..."
+    mkdir -p /boot
+    touch /boot/armbianEnv.txt
+    if ! grep -q "net.ifnames=0" /boot/armbianEnv.txt; then
+        echo "extraargs=net.ifnames=0 biosdevname=0" >> /boot/armbianEnv.txt
+    fi
 
     # 3. 读取 PPPoE 账号密码（从 GH Secrets 注入的环境变量获取，默认使用占位符）
     PPPOE_ACCOUNT="${PPPOE_USER:-YOUR_PPPOE_ACCOUNT}"
@@ -111,6 +97,17 @@ auto eth1
 iface eth1 inet static
     address 192.168.100.1
     netmask 255.255.255.0
+    pre-up ip link set eth1 up
+EOF
+
+    # 允许 NetworkManager 尊重并管理 ifupdown 静态接口
+    mkdir -p /etc/NetworkManager
+    cat <<EOF > /etc/NetworkManager/NetworkManager.conf
+[main]
+plugins=ifupdown,keyfile
+
+[ifupdown]
+managed=true
 EOF
 
     # 4. 配置 dnsmasq (DHCP & DNS)
