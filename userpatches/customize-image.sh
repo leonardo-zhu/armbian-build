@@ -121,6 +121,8 @@ interface=eth1
 dhcp-range=192.168.100.100,192.168.100.250,255.255.255.0,12h
 dhcp-option=option:router,192.168.100.1
 dhcp-option=option:dns-server,192.168.100.1
+EOF
+
     # 5. 开启内核转发与优化参数
     cat <<EOF > /etc/sysctl.d/99-router.conf
 net.ipv4.ip_forward = 1
@@ -181,48 +183,9 @@ EOF
 
     systemctl enable nftables
 
-    # 7. 配置 IPv6 DHCPv6-PD 前缀委派与 LAN 侧 RA/SLAAC 分发
-    echo "Configuring IPv6 DHCPv6-PD and SLAAC..."
-    
-    # 编写 odhcp6c 回调脚本：获取 PD 前缀并自动分配给 eth1
-    cat <<'EOF' > /usr/local/bin/odhcp6c-script.sh
-#!/bin/sh
-[ -z "$2" ] && exit 0
+    # 7. 配置 IPv6 RA/SLAAC 分发 (PD 前缀委派暂不使用 odhcp6c)
+    echo "Configuring IPv6 SLAAC..."
 
-case "$2" in
-    bound|informed|updated)
-        if [ -n "$PREFIXES" ]; then
-            # 提取第一个 IPv6 前缀并挂载到 eth1
-            for prefix in $PREFIXES; do
-                ADDR="${prefix%%/*}"
-                LEN="${prefix##*/}"
-                if [ "$LEN" -le 64 ]; then
-                    LAN_IP="${ADDR}1"
-                    ip -6 addr flush dev eth1 scope global 2>/dev/null
-                    ip -6 addr add "${LAN_IP}/64" dev eth1
-                    systemctl reload dnsmasq 2>/dev/null || true
-                    break
-                fi
-            done
-        fi
-        ;;
-    unbound)
-        ip -6 addr flush dev eth1 scope global 2>/dev/null
-        ;;
-esac
-EOF
-    chmod +x /usr/local/bin/odhcp6c-script.sh
-
-    # 配置 pppoe 拨号上线钩子触发 odhcp6c 获取 PD
-    mkdir -p /etc/ppp/ipv6-up.d
-    cat <<'EOF' > /etc/ppp/ipv6-up.d/dhcpv6-pd
-#!/bin/sh
-# 杀死已有的 odhcp6c 实例
-killall odhcp6c 2>/dev/null || true
-# 针对 ppp0 接口启动 odhcp6c 申请 PD 前缀 (前缀掩码范围 /60 到 /64)
-/usr/sbin/odhcp6c -s /usr/local/bin/odhcp6c-script.sh -P 64 ppp0 &
-EOF
-    chmod +x /etc/ppp/ipv6-up.d/dhcpv6-pd
 
     # 更新 dnsmasq.conf 支持 IPv6 RA 与 SLAAC 无状态分发
     cat <<EOF > /etc/dnsmasq.conf
