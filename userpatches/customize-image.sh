@@ -215,7 +215,7 @@ EOF
 
     # 8. 安装 Docker 与 Docker Compose
     echo "Installing Docker and Docker Compose..."
-    apt-get install -y --no-install-recommends docker.io docker-compose-plugin
+    apt-get install -y --no-install-recommends docker.io docker-compose
     systemctl enable docker
 
     # 9. 下载并配置 Mihomo (Clash Meta)
@@ -224,7 +224,7 @@ EOF
     
     # 绕过 GitHub API 以防频繁编译触发限流导致下载到错误文件
     MIHOMO_LATEST_TAG="v1.18.7"
-    MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_LATEST_TAG}/mihomo-linux-arm64-compatible-${MIHOMO_LATEST_TAG}.gz"
+    MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_LATEST_TAG}/mihomo-linux-arm64-${MIHOMO_LATEST_TAG}.gz"
     
     echo "Fetching mihomo from: $MIHOMO_URL"
     curl -sSfL "$MIHOMO_URL" | gunzip > /usr/local/bin/mihomo
