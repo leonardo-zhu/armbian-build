@@ -193,8 +193,7 @@ domain-needed
 bogus-priv
 no-resolv
 bind-interfaces
-server=223.5.5.5
-server=119.29.29.29
+server=127.0.0.1#1053
 
 interface=eth1
 dhcp-range=192.168.100.100,192.168.100.250,255.255.255.0,12h
@@ -261,16 +260,18 @@ EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv6.conf.default.forwarding = 1
-net.ipv6.conf.all.accept_ra = 2
-net.ipv6.conf.default.accept_ra = 2
+net.ipv6.conf.all.accept_ra = 0
+net.ipv6.conf.default.accept_ra = 0
+net.ipv6.conf.eth1.accept_ra = 0
 net.netfilter.nf_conntrack_max = 131072
 EOF
 
     mkdir -p /etc/ppp/ip-up.d /etc/ppp/ipv6-up.d
     cat <<'EOF' > /etc/ppp/ip-up.d/10-r4s-pppoe-up
 #!/bin/sh
-sysctl -w net.ipv6.conf.all.accept_ra=2 >/dev/null 2>&1 || true
-sysctl -w net.ipv6.conf.default.accept_ra=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.all.accept_ra=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.accept_ra=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.eth1.accept_ra=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.ppp0.accept_ra=2 >/dev/null 2>&1 || true
 systemctl start r4s-ipv6-ra-sync.service >/dev/null 2>&1 || true
 EOF
@@ -278,8 +279,9 @@ EOF
 
     cat <<'EOF' > /etc/ppp/ipv6-up.d/10-r4s-pppoe-ipv6-up
 #!/bin/sh
-sysctl -w net.ipv6.conf.all.accept_ra=2 >/dev/null 2>&1 || true
-sysctl -w net.ipv6.conf.default.accept_ra=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.all.accept_ra=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.accept_ra=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.eth1.accept_ra=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.ppp0.accept_ra=2 >/dev/null 2>&1 || true
 systemctl start r4s-ipv6-ra-sync.service >/dev/null 2>&1 || true
 EOF
@@ -311,6 +313,10 @@ table inet filter {
 
         # 解决 PPPoE 拨号导致的 MTU 过大问题；必须位于 LAN->WAN accept 之前。
         iifname "eth1" oifname "ppp0" tcp flags syn tcp option maxseg size set rt mtu
+
+        # 允许 LAN 流量进入 Mihomo TUN，由 Mihomo 按规则代理或直连。
+        iifname "eth1" oifname "Meta" accept
+        iifname "Meta" oifname "eth1" ct state established,related accept
 
         # 允许 LAN (eth1) 转发到 WAN (ppp0)
         iifname "eth1" oifname "ppp0" accept
@@ -377,10 +383,13 @@ EOF
         echo "WARNING: Unable to discover MetaCubeXD UI asset; continuing without bundled UI." >&2
     fi
 
-    # 基础 config.yaml：预装备用，但默认不接管路由/DNS，避免破坏基础软路由转发。
-    cat <<EOF > /etc/mihomo/config.yaml
+    if [ -f "/tmp/overlay/mihomo-config.yaml" ]; then
+        install -m 600 "/tmp/overlay/mihomo-config.yaml" /etc/mihomo/config.yaml
+    else
+        cat <<EOF > /etc/mihomo/config.yaml
 port: 7890
 socks-port: 7891
+redir-port: 7892
 allow-lan: true
 mode: rule
 log-level: info
@@ -388,37 +397,63 @@ ipv6: true
 external-controller: 0.0.0.0:9090
 external-ui: ui
 secret: ""
-
-tun:
-  enable: false
-  stack: system
-  dns-hijack: []
-  auto-route: false
-  auto-detect-interface: false
-
 dns:
-  enable: false
+  enable: true
   listen: 127.0.0.1:1053
-  enhanced-mode: redir-host
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
   nameserver:
     - 223.5.5.5
     - 119.29.29.29
-
 rules:
   - GEOIP,LAN,DIRECT
   - MATCH,DIRECT
 EOF
+    fi
+
+    # 使用真实 Clash/Mihomo 配置，并补上 R4S 软路由 TUN 配置。
+    # DNS 只监听 127.0.0.1:1053，由 dnsmasq 转发，避免和 LAN 53 端口冲突。
+    awk '
+        BEGIN { in_dns=0; has_tun=0 }
+        /^tun:[[:space:]]*$/ { has_tun=1 }
+        /^dns:[[:space:]]*$/ {
+            in_dns=1
+            print
+            print "    listen: 127.0.0.1:1053"
+            next
+        }
+        in_dns && /^[^[:space:]][^:]*:/ { in_dns=0 }
+        in_dns && /^[[:space:]]+listen:/ { next }
+        { print }
+        END {
+            if (!has_tun) {
+                print ""
+                print "tun:"
+                print "  enable: true"
+                print "  stack: system"
+                print "  device: Meta"
+                print "  auto-route: true"
+                print "  auto-detect-interface: true"
+                print "  strict-route: true"
+                print "  dns-hijack:"
+                print "    - any:53"
+            }
+        }
+    ' /etc/mihomo/config.yaml > /etc/mihomo/config.yaml.tmp
+    mv /etc/mihomo/config.yaml.tmp /etc/mihomo/config.yaml
+    chmod 600 /etc/mihomo/config.yaml
 
     # 创建 mihomo systemd 服务
     cat <<EOF > /etc/systemd/system/mihomo.service
 [Unit]
 Description=Mihomo (Clash Meta) Daemon
-After=network.target network-online.target nss-lookup.target
-Wants=network-online.target
+After=pppoe-wan.service dnsmasq.service
+Wants=pppoe-wan.service dnsmasq.service
 
 [Service]
 Type=simple
 User=root
+ExecStartPre=/usr/local/bin/mihomo -t -d /etc/mihomo
 ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
 Restart=always
 RestartSec=3s
@@ -428,7 +463,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-    systemctl disable mihomo.service 2>/dev/null || true
+    systemctl enable mihomo.service
 
     # 12. 配置 NanoPi R4S 原生板载指示灯 (SYS / WAN / LAN)
     echo "Configuring NanoPi R4S LED triggers for WAN (eth0) and LAN (eth1)..."
